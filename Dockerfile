@@ -27,6 +27,9 @@ RUN apt-get update -qq && \
 RUN xvfb-run -a wineboot --init && \
     wineserver -w
 
+# Fix NuGet cache folder (prevents restore errors)
+RUN mkdir -p /root/.wine64/drive_c/users/root/.nuget
+
 # Install Winetricks
 RUN wget -q \
       https://raw.githubusercontent.com/Winetricks/winetricks/${WINETRICKS_COMMIT}/src/winetricks && \
@@ -85,8 +88,17 @@ RUN xvfb-run -a wine cmd /c "git config --global --add safe.directory Z:/root/sb
     wineserver -k && \
     wineserver -w
 
+# Trust repo for native Linux git
+RUN git config --global --add safe.directory /root/sbox
+
 COPY sbox-build-internal.sh /usr/local/bin/sbox-build-internal
 RUN chmod +x /usr/local/bin/sbox-build-internal
 
+# Add experimental smart build script
+RUN apt-get update -qq && apt-get install -qq python3 && rm -rf /var/lib/apt/lists/*
+COPY build.py /usr/local/bin/build
+RUN chmod +x /usr/local/bin/build
+
 WORKDIR /root/sbox
-ENTRYPOINT ["sbox-build-internal"]
+
+ENTRYPOINT ["build"]
