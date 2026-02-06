@@ -1,4 +1,176 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
+LOCAL_IMAGE="sbox-win-docker"
+REMOTE_IMAGE="ghcr.io/vincetheprogrammer/sbox-win-docker:main"
+REPO_URL="https://github.com/vinceTheProgrammer/sbox-win-docker"
+INSTALL_DOCS_URL="https://docs.docker.com/engine/install/"
+
+# -----------------------------
+# Docker sanity checks / setup
+# -----------------------------
+
+if ! command -v docker >/dev/null 2>&1; then
+  echo "ERROR: Docker is not installed."
+  echo "Install Docker here:"
+  echo "$INSTALL_DOCS_URL"
+  exit 1
+fi
+
+# Check if docker daemon is running
+if ! docker info >/dev/null 2>&1; then
+  echo "Docker is installed, but the Docker daemon doesn't seem to be running."
+
+  read -rp "Start Docker now? (y/n): " answer
+  if [[ "$answer" != "y" && "$answer" != "Y" ]]; then
+    echo "ERROR: Docker must be running to continue."
+    exit 1
+  fi
+
+  if command -v systemctl >/dev/null 2>&1; then
+    sudo systemctl start docker
+  elif command -v service >/dev/null 2>&1; then
+    sudo service docker start
+  else
+    echo "ERROR: Couldn't detect systemctl or service manager to start Docker."
+    echo "Please start Docker manually, then re-run this script."
+    exit 1
+  fi
+
+  # Re-check after trying to start
+  if ! docker info >/dev/null 2>&1; then
+    echo "ERROR: Docker still isn't running after attempting to start it."
+    exit 1
+  fi
+fi
+
+# Check if docker group exists
+if ! getent group docker >/dev/null 2>&1; then
+  echo "Docker group does not exist."
+
+  read -rp "Create the docker group now? (y/n): " answer
+  if [[ "$answer" != "y" && "$answer" != "Y" ]]; then
+    echo "ERROR: Docker group is required to continue."
+    exit 1
+  fi
+
+  sudo groupadd docker
+fi
+
+# Check if current user is in docker group
+if ! id -nG "$USER" | tr ' ' '\n' | grep -qx docker; then
+  echo "User '$USER' is not in the docker group."
+
+  read -rp "Add '$USER' to the docker group now? (y/n): " answer
+  if [[ "$answer" != "y" && "$answer" != "Y" ]]; then
+    echo "ERROR: You must be in the docker group to continue."
+    exit 1
+  fi
+
+  sudo usermod -aG docker "$USER"
+
+  echo
+  echo "SUCCESS: Added '$USER' to docker group."
+  echo "You must log out and log back in (or reboot) for this to take effect."
+  echo "After that, re-run this script."
+  exit 0
+fi
+
+# -----------------------------
+# Ensure docker image exists
+# -----------------------------
+
+if ! docker image inspect "$LOCAL_IMAGE" >/dev/null 2>&1; then
+  echo "Docker image '$LOCAL_IMAGE' is not present."
+  echo
+  echo "Recommended: Pull the prebuilt image (fastest)."
+  echo "Alternative: Build locally (slower)."
+  echo
+
+  read -rp "Pull prebuilt image from GitHub? (Y/n): " choice
+  choice="${choice:-Y}"
+
+  if [[ "$choice" == "y" || "$choice" == "Y" ]]; then
+    echo "Pulling: $REMOTE_IMAGE"
+    docker pull "$REMOTE_IMAGE"
+
+    echo "Tagging as: $LOCAL_IMAGE"
+    docker tag "$REMOTE_IMAGE" "$LOCAL_IMAGE"
+
+  elif [[ "$choice" == "n" || "$choice" == "N" ]]; then
+    echo
+    echo "You chose to build locally."
+    echo "Where should the repo be cloned?"
+    echo "Example: $HOME/dev"
+    echo
+
+    read -rp "Clone location: " clone_dir
+
+    if [[ -z "$clone_dir" ]]; then
+      echo "ERROR: No location provided."
+      exit 1
+    fi
+
+    clone_dir="${clone_dir/#\~/$HOME}"
+
+    mkdir -p "$clone_dir"
+
+    if [[ ! -d "$clone_dir" ]]; then
+      echo "ERROR: Failed to create directory: $clone_dir"
+      exit 1
+    fi
+
+    cd "$clone_dir"
+
+    if [[ -d "sbox-win-docker" ]]; then
+      echo "ERROR: Directory already exists: $clone_dir/sbox-win-docker"
+      echo "Delete it or choose another location."
+      exit 1
+    fi
+
+    echo "Cloning repo..."
+    git clone "$REPO_URL"
+
+    cd sbox-win-docker
+
+    echo "Building docker image '$LOCAL_IMAGE'..."
+    docker build -t "$LOCAL_IMAGE" .
+
+  else
+    echo "ERROR: Invalid choice."
+    exit 1
+  fi
+fi
+
+# ----------------------------------------
+# Strict check: must be inside sbox-public
+# ----------------------------------------
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+
+if [[ -z "$REPO_ROOT" ]]; then
+  echo "ERROR: You must run this script from inside a git repository."
+  echo "Current dir: $(pwd)"
+  exit 1
+fi
+
+if [[ "$(basename "$REPO_ROOT")" != "sbox-public" ]]; then
+  echo "ERROR: Refusing to run: git repo top-level folder is not named 'sbox-public'."
+  echo "Found repo root: $REPO_ROOT"
+  echo "Current dir: $(pwd)"
+  exit 1
+fi
+
+if [[ "$PWD" != "$REPO_ROOT"* ]]; then
+  echo "ERROR: Current directory is not inside the detected repo root."
+  exit 1
+fi
+
+echo "Starting s&box build in repo: $REPO_ROOT"
+
 docker run --rm -it \
   -v "$PWD:/root/sbox" \
-  sbox-win-docker "$@"
+  -v "$HOME/.cache/sbox-nuget":/root/.wine64/drive_c/users/root/.nuget \
+  -e HOST_UID="$(id -u)" \
+  -e HOST_GID="$(id -g)" \
+  "$LOCAL_IMAGE" "$@"
