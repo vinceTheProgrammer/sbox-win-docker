@@ -18,7 +18,7 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 # Check if docker daemon is running
-if ! docker info >/dev/null 2>&1; then
+if ! sudo docker info >/dev/null 2>&1; then
   echo "Docker is installed, but the Docker daemon doesn't seem to be running."
 
   read -rp "Start Docker now? (y/n): " answer
@@ -38,7 +38,7 @@ if ! docker info >/dev/null 2>&1; then
   fi
 
   # Re-check after trying to start
-  if ! docker info >/dev/null 2>&1; then
+  if ! sudo docker info >/dev/null 2>&1; then
     echo "ERROR: Docker still isn't running after attempting to start it."
     exit 1
   fi
