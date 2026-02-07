@@ -91,11 +91,10 @@ RUN xvfb-run -a wine cmd /c "git config --global --add safe.directory Z:/root/sb
 # Trust repo for native Linux git
 RUN git config --global --add safe.directory /root/sbox
 
-# Add experimental smart build script
+# Add smart build script
 RUN apt-get update -qq && apt-get install -qq python3 && rm -rf /var/lib/apt/lists/*
-COPY build.py /usr/local/bin/build
-RUN chmod +x /usr/local/bin/build
+COPY build.py /usr/local/bin/build.py
 
 WORKDIR /root/sbox
 
-ENTRYPOINT ["build"]
+ENTRYPOINT ["python3", "/usr/local/bin/build.py"]

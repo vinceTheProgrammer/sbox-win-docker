@@ -3,9 +3,10 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+import argparse
 
 ROOT = Path("/root/sbox")
-DOTNET = r"C:\Program Files\dotnet\dotnet.exe"
+DOTNET_EXE = r"C:\Program Files\dotnet\dotnet.exe"
 CONFIG = os.environ.get("SBOX_CONFIG", "Developer")
 
 # Ignore paths (repo-relative)
@@ -18,7 +19,6 @@ IGNORE_DIRS = {
     "obj",
 }
 
-# Ignore by suffix
 IGNORE_SUFFIXES = {
     ".user",
     ".suo",
@@ -26,8 +26,6 @@ IGNORE_SUFFIXES = {
     ".log",
 }
 
-# Only treat these as "code changes that should trigger a build"
-# You can expand this if you want content files to trigger builds too.
 RELEVANT_SUFFIXES = {
     ".cs",
     ".csproj",
@@ -38,30 +36,28 @@ RELEVANT_SUFFIXES = {
     ".json",
     ".razor",
     ".tt",
-    ".txt",
 }
 
 
-def run(cmd, check=True, capture=False):
+SBOXBUILD_CSPROJ = ROOT / "engine/Tools/SboxBuild/SboxBuild.csproj"
+
+
+def run(cmd, capture=False):
     print(f"+ {' '.join(cmd)}")
     if capture:
         return subprocess.check_output(cmd, text=False)
-    else:
-        subprocess.check_call(cmd)
+    subprocess.check_call(cmd)
+    return None
 
 
 def is_ignored(path: str) -> bool:
-    # normalize slashes
     path = path.replace("\\", "/").lstrip("./")
-
     parts = path.split("/")
 
-    # ignore if any directory component is in IGNORE_DIRS
     for part in parts[:-1]:
         if part in IGNORE_DIRS:
             return True
 
-    # ignore if filename suffix matches
     p = Path(path)
     if p.suffix in IGNORE_SUFFIXES:
         return True
@@ -70,52 +66,30 @@ def is_ignored(path: str) -> bool:
 
 
 def is_relevant(path: str) -> bool:
-    p = Path(path)
-    if p.suffix in RELEVANT_SUFFIXES:
-        return True
-
-    # if it's a directory entry, ignore
     if path.endswith("/"):
         return False
-
-    return False
+    return Path(path).suffix in RELEVANT_SUFFIXES
 
 
 def git_changed_files():
-    """
-    Returns repo-relative paths of changed files.
-    Includes staged + unstaged + untracked.
-    Uses -z to avoid whitespace/path parsing bugs.
-    """
     changed = set()
 
     out = run(["git", "status", "--porcelain", "-z"], capture=True)
-
-    # output is: XY<space>path\0 or "?? path\0"
     entries = out.split(b"\x00")
 
     for entry in entries:
         if not entry:
             continue
-
-        # entry begins with status, then space, then filename
-        # examples:
-        # b" M engine/foo.cs"
-        # b"?? .vscode/"
         if len(entry) < 4:
             continue
 
-        # status = entry[:2]  # unused
-        raw_path = entry[3:]  # everything after "XY "
+        raw_path = entry[3:]
         path = raw_path.decode("utf-8", errors="replace").strip()
 
         if not path:
             continue
-
-        # ignore directories and junk
         if is_ignored(path):
             continue
-
         if not is_relevant(path):
             continue
 
@@ -132,7 +106,6 @@ def find_csproj_owners(changed_files):
         if not full.exists():
             continue
 
-        # walk upward until we find a csproj
         p = full.parent
         while p != ROOT and p != p.parent:
             csprojs = sorted(p.glob("*.csproj"))
@@ -145,7 +118,6 @@ def find_csproj_owners(changed_files):
 
 
 def wine_path(path: Path):
-    # convert /root/sbox/engine/... into Z:/root/sbox/engine/...
     return "Z:/" + str(path.relative_to("/")).replace("\\", "/")
 
 
@@ -155,18 +127,92 @@ def build_project(csproj: Path):
 
     run([
         "xvfb-run", "-a",
-        "wine", DOTNET,
+        "wine", DOTNET_EXE,
         "build", proj,
         "-c", CONFIG
     ])
 
 
+def looks_like_fresh_clone():
+    """
+    If no build outputs exist, assume it hasn't been built yet.
+    """
+    engine_bin = ROOT / "engine/bin"
+    engine_obj = ROOT / "engine/obj"
+    game_bin = ROOT / "game/bin"
+    game_obj = ROOT / "game/obj"
+
+    # if any exist, probably already built at least once
+    if engine_bin.exists() or engine_obj.exists() or game_bin.exists() or game_obj.exists():
+        return False
+
+    return True
+
+
+def full_build():
+    if not SBOXBUILD_CSPROJ.exists():
+        print(f"ERROR: missing {SBOXBUILD_CSPROJ}")
+        return 1
+
+    proj = wine_path(SBOXBUILD_CSPROJ)
+
+    print("\n==> FULL BUILD (SboxBuild)\n")
+
+    # dotnet run --project ... -- build --config Developer
+    run([
+        "xvfb-run", "-a",
+        "wine", DOTNET_EXE,
+        "run",
+        "--project", proj,
+        "--",
+        "build",
+        "--config", CONFIG
+    ])
+
+    run([
+        "xvfb-run", "-a",
+        "wine", DOTNET_EXE,
+        "run",
+        "--project", proj,
+        "--",
+        "build-shaders"
+    ])
+
+    run([
+        "xvfb-run", "-a",
+        "wine", DOTNET_EXE,
+        "run",
+        "--project", proj,
+        "--",
+        "build-content"
+    ])
+
+    print("\n==> Full build done.")
+    return 0
+
+
 def main():
+    parser = argparse.ArgumentParser(description="Smart incremental build for s&box in docker/wine.")
+    parser.add_argument("--full", action="store_true", help="Force a full build using SboxBuild.")
+    parser.add_argument("--no-auto-full", action="store_true",
+                        help="Disable auto full-build detection for fresh clones.")
+    args = parser.parse_args()
+
     os.chdir(ROOT)
 
-    # defensively avoid "dubious ownership" issues
+    # avoid "dubious ownership" issues
     subprocess.call(["git", "config", "--global", "--add", "safe.directory", str(ROOT)])
 
+    # Forced full build
+    if args.full:
+        return full_build()
+
+    # Auto full build if looks like never built
+    if not args.no_auto_full and looks_like_fresh_clone():
+        print("==> No build output detected (fresh clone?). Running full build...")
+        return full_build()
+
+    # Normal incremental behavior
     changed = git_changed_files()
 
     if not changed:
