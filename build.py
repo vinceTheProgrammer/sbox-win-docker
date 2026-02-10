@@ -4,10 +4,14 @@ import subprocess
 import sys
 from pathlib import Path
 import argparse
+import time
 
 ROOT = Path("/root/sbox")
 DOTNET_EXE = r"C:\Program Files\dotnet\dotnet.exe"
 CONFIG = os.environ.get("SBOX_CONFIG", "Developer")
+
+HOST_UID = os.environ.get("HOST_UID")
+HOST_GID = os.environ.get("HOST_GID")
 
 # Ignore paths (repo-relative)
 IGNORE_DIRS = {
@@ -37,7 +41,6 @@ RELEVANT_SUFFIXES = {
     ".razor",
     ".tt",
 }
-
 
 SBOXBUILD_CSPROJ = ROOT / "engine/Tools/SboxBuild/SboxBuild.csproj"
 
@@ -133,21 +136,17 @@ def build_project(csproj: Path):
     ])
 
 
-def looks_like_fresh_clone():
-    """
-    If no build outputs exist, assume it hasn't been built yet.
-    """
-    engine_bin = ROOT / "engine/bin"
-    engine_obj = ROOT / "engine/obj"
-    game_bin = ROOT / "game/bin"
-    game_obj = ROOT / "game/obj"
+def looks_like_fresh_clone(min_hits=4):
+    sentinel_paths = [
+        ROOT / "game/sbox.exe",
+        ROOT / "game/sbox.dll",
+        ROOT / "game/bin/managed/Sandbox.Engine.dll",
+        ROOT / "game/.source2",
+        ROOT / "engine/Tools/CodeGen/bin/CodeGen.dll",
+    ]
 
-    # if any exist, probably already built at least once
-    if engine_bin.exists() or engine_obj.exists() or game_bin.exists() or game_obj.exists():
-        return False
-
-    return True
-
+    hits = sum(1 for p in sentinel_paths if p.exists())
+    return hits < min_hits
 
 def full_build():
     if not SBOXBUILD_CSPROJ.exists():
@@ -158,7 +157,6 @@ def full_build():
 
     print("\n==> FULL BUILD (SboxBuild)\n")
 
-    # dotnet run --project ... -- build --config Developer
     run([
         "xvfb-run", "-a",
         "wine", DOTNET_EXE,
@@ -190,8 +188,91 @@ def full_build():
     print("\n==> Full build done.")
     return 0
 
+import shutil
+
+def fix_addon_code_case():
+    """
+    Some builds incorrectly generate game/addons/<addon>/code/* instead of Code/*.
+    On Linux this breaks Proton. This function merges `code` into `Code` and deletes `code`.
+    """
+    addons_dir = ROOT / "game/addons"
+    if not addons_dir.exists():
+        return
+
+    print("\n==> Fixing addon Code/code case issues...")
+
+    for addon in addons_dir.iterdir():
+        if not addon.is_dir():
+            continue
+
+        lower = addon / "code"
+        proper = addon / "Code"
+
+        if not lower.exists() or not lower.is_dir():
+            continue
+
+        # If Code doesn't exist, create it
+        proper.mkdir(parents=True, exist_ok=True)
+
+        # Move everything from code/ into Code/
+        for src in lower.rglob("*"):
+            if src.is_dir():
+                continue
+
+            rel = src.relative_to(lower)
+            dst = proper / rel
+
+            dst.parent.mkdir(parents=True, exist_ok=True)
+
+            # If destination exists, overwrite it
+            if dst.exists():
+                dst.unlink()
+
+            shutil.move(str(src), str(dst))
+
+        # Remove empty dirs inside lower
+        for d in sorted(lower.rglob("*"), reverse=True):
+            if d.is_dir():
+                try:
+                    d.rmdir()
+                except OSError:
+                    pass
+
+        # Remove the main lower directory if empty
+        try:
+            lower.rmdir()
+            print(f"   Fixed: {lower.relative_to(ROOT)} -> {proper.relative_to(ROOT)}")
+        except OSError:
+            print(f"   WARNING: could not delete {lower.relative_to(ROOT)} (not empty?)")
+
+    print("==> Done fixing addon case issues.")
+
+def fix_ownership_since(start_time: float):
+    """
+    Chown any files/dirs modified since start_time to HOST_UID:HOST_GID.
+    This prevents root-owned build outputs on the host bind mount.
+    """
+    if not HOST_UID or not HOST_GID:
+        print("==> HOST_UID/HOST_GID not set, skipping ownership fix.")
+        return
+
+    print(f"\n==> Fixing ownership (UID={HOST_UID}, GID={HOST_GID})...")
+
+    ts = int(start_time)
+
+    # Fix repo outputs
+    subprocess.call([
+        "bash", "-lc",
+        f"find {ROOT} -xdev -newermt '@{ts}' -print0 | "
+        f"xargs -0 -r chown {HOST_UID}:{HOST_GID}"
+    ])
+
+    print("==> Ownership fixed.")
+
 
 def main():
+    start_time = time.time()
+
     parser = argparse.ArgumentParser(description="Smart incremental build for s&box in docker/wine.")
     parser.add_argument("--full", action="store_true", help="Force a full build using SboxBuild.")
     parser.add_argument("--no-auto-full", action="store_true",
@@ -203,42 +284,49 @@ def main():
     # avoid "dubious ownership" issues
     subprocess.call(["git", "config", "--global", "--add", "safe.directory", str(ROOT)])
 
-    # Forced full build
-    if args.full:
-        return full_build()
+    try:
+        # Forced full build
+        if args.full:
+            rc = full_build()
+            return rc
 
-    # Auto full build if looks like never built
-    if not args.no_auto_full and looks_like_fresh_clone():
-        print("==> No build output detected (fresh clone?). Running full build...")
-        return full_build()
+        # Auto full build if looks like never built
+        if not args.no_auto_full and looks_like_fresh_clone():
+            print("==> No build output detected (fresh clone?). Running full build...")
+            rc = full_build()
+            return rc
 
-    # Normal incremental behavior
-    changed = git_changed_files()
+        # Normal incremental behavior
+        changed = git_changed_files()
 
-    if not changed:
-        print("==> No relevant git changes detected. Nothing to build.")
+        if not changed:
+            print("==> No relevant git changes detected. Nothing to build.")
+            return 0
+
+        print("==> Changed relevant files:")
+        for f in changed:
+            print("   ", f)
+
+        projects = find_csproj_owners(changed)
+
+        if not projects:
+            print("\n==> No owning .csproj found for changed files.")
+            print("    (Maybe only non-code files changed?)")
+            return 0
+
+        print("\n==> Projects to build:")
+        for p in projects:
+            print("   ", p.relative_to(ROOT))
+
+        for p in projects:
+            build_project(p)
+
+        print("\n==> Done.")
         return 0
 
-    print("==> Changed relevant files:")
-    for f in changed:
-        print("   ", f)
-
-    projects = find_csproj_owners(changed)
-
-    if not projects:
-        print("\n==> No owning .csproj found for changed files.")
-        print("    (Maybe only non-code files changed?)")
-        return 0
-
-    print("\n==> Projects to build:")
-    for p in projects:
-        print("   ", p.relative_to(ROOT))
-
-    for p in projects:
-        build_project(p)
-
-    print("\n==> Done.")
-    return 0
+    finally:
+        fix_addon_code_case()
+        fix_ownership_since(start_time)
 
 
 if __name__ == "__main__":

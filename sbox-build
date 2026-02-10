@@ -13,18 +13,27 @@ FORCE_PULL=0
 FORCE_REBUILD=0
 DO_UPDATE=0
 SRC_DIR="$DEFAULT_SRC_DIR"
+DROP_SHELL=0
 
 usage() {
   cat <<EOF
-Usage: sbox-build [options] [-- <args passed to docker container>]
+Usage: sbox-build [options]
 
-Options:
+Wrapper Options:
   --pull           Force pulling the prebuilt image (even if local image exists)
   --rebuild        Force rebuilding the image locally (uses local repo clone)
   --update         When rebuilding, git pull before building
   --src-dir <dir>  Override local repo directory (default: $DEFAULT_SRC_DIR)
   --no-prompt      Never prompt; fail if user interaction would be required
+  --shell          Drop into an interactive bash shell inside the container           
   -h, --help       Show this help message
+
+Build Options:
+  --full           Force full build
+  --no-auto-full   Disable auto full-build detection for fresh clones.
+  --test           Run tests after build
+  --format         Format the project
+  --patch-codegen  Make future builds faster by patching codegen
 
 Examples:
   sbox-build
@@ -33,7 +42,7 @@ Examples:
   sbox-build --rebuild --update
   sbox-build --rebuild --src-dir ~/dev/sbox-win-docker
   sbox-build --pull --no-prompt
-  sbox-build -- --some-container-arg
+  sbox-build --full --test --format --patch-codegen
 EOF
 }
 
@@ -68,6 +77,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-prompt)
       NO_PROMPT=1
+      shift
+      ;;
+    --shell)
+      DROP_SHELL=1
       shift
       ;;
     -h|--help)
@@ -120,11 +133,8 @@ choose_src_dir_prompt() {
     return 0
   fi
 
-  local chosen=""
-  read -rp "Repo location (default: $DEFAULT_SRC_DIR): " chosen
-  chosen="${chosen:-$DEFAULT_SRC_DIR}"
-  chosen="${chosen/#\~/$HOME}"
-  SRC_DIR="$chosen"
+  read -e -p "Repo location: " -i "$DEFAULT_SRC_DIR" SRC_DIR
+  SRC_DIR="${SRC_DIR/#\~/$HOME}"
 }
 
 # -----------------------------
@@ -138,6 +148,37 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 1
 fi
 
+# Ensure docker group exists
+if ! getent group docker >/dev/null 2>&1; then
+  echo "Docker group does not exist."
+
+  if ! prompt_yes_no "Create the docker group now? (Y/n): " "Y"; then
+    echo "ERROR: Docker group is required to continue."
+    exit 1
+  fi
+
+  sudo groupadd docker
+fi
+
+# Ensure user is in docker group
+if ! id -nG "$USER" | tr ' ' '\n' | grep -qx docker; then
+  echo "User '$USER' is not in the docker group."
+
+  if ! prompt_yes_no "Add '$USER' to the docker group now? (Y/n): " "Y"; then
+    echo "ERROR: You must be in the docker group to continue."
+    exit 1
+  fi
+
+  sudo usermod -aG docker "$USER"
+
+  echo
+  echo "SUCCESS: Added '$USER' to docker group."
+  echo "You must log out and log back in (or reboot) for this to take effect."
+  echo "Then re-run: sbox-build"
+  exit 0
+fi
+
+# Now that permissions should be correct, check if docker daemon is running
 if ! docker info >/dev/null 2>&1; then
   echo "Docker is installed, but the Docker daemon doesn't seem to be running."
 
@@ -160,34 +201,6 @@ if ! docker info >/dev/null 2>&1; then
     echo "ERROR: Docker still isn't running after attempting to start it."
     exit 1
   }
-fi
-
-if ! getent group docker >/dev/null 2>&1; then
-  echo "Docker group does not exist."
-
-  if ! prompt_yes_no "Create the docker group now? (Y/n): " "Y"; then
-    echo "ERROR: Docker group is required to continue."
-    exit 1
-  fi
-
-  sudo groupadd docker
-fi
-
-if ! id -nG "$USER" | tr ' ' '\n' | grep -qx docker; then
-  echo "User '$USER' is not in the docker group."
-
-  if ! prompt_yes_no "Add '$USER' to the docker group now? (Y/n): " "Y"; then
-    echo "ERROR: You must be in the docker group to continue."
-    exit 1
-  fi
-
-  sudo usermod -aG docker "$USER"
-
-  echo
-  echo "SUCCESS: Added '$USER' to docker group."
-  echo "You must log out and log back in (or reboot) for this to take effect."
-  echo "Then re-run: sbox-build"
-  exit 0
 fi
 
 # -----------------------------
