@@ -5,11 +5,13 @@ import sys
 from pathlib import Path
 import argparse
 import time
+import hashlib
 
 ROOT = Path("/root/sbox")
 DOTNET_EXE = r"C:\Program Files\dotnet\dotnet.exe"
 CONFIG = os.environ.get("SBOX_CONFIG", "Developer")
 
+CACHE_DIR = ROOT / ".sboxbuild_cache"
 HOST_UID = os.environ.get("HOST_UID")
 HOST_GID = os.environ.get("HOST_GID")
 
@@ -21,6 +23,7 @@ IGNORE_DIRS = {
     ".vs",
     "bin",
     "obj",
+    ".sboxbuild_cache",
 }
 
 IGNORE_SUFFIXES = {
@@ -188,6 +191,112 @@ def full_build():
     print("\n==> Full build done.")
     return 0
 
+
+def iter_project_inputs(project_dir: Path):
+    """
+    Walk project dir recursively and yield relevant files
+    (excluding bin/obj/.git/.vscode/etc).
+    """
+    for root, dirs, files in os.walk(project_dir):
+        root_path = Path(root)
+
+        # prune ignored directories
+        dirs[:] = [d for d in dirs if d not in IGNORE_DIRS]
+
+        for f in files:
+            p = root_path / f
+            if p.suffix in IGNORE_SUFFIXES:
+                continue
+            if p.suffix not in RELEVANT_SUFFIXES:
+                continue
+            yield p
+
+
+def find_directory_build_files(start_dir: Path):
+    """
+    Collect Directory.Build.props/targets walking up to ROOT.
+    """
+    out = []
+    p = start_dir
+
+    while True:
+        props = p / "Directory.Build.props"
+        targets = p / "Directory.Build.targets"
+
+        if props.exists():
+            out.append(props)
+        if targets.exists():
+            out.append(targets)
+
+        if p == ROOT:
+            break
+        if p.parent == p:
+            break
+        p = p.parent
+
+    return out
+
+
+def file_hash(path: Path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(1024 * 1024)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def compute_project_hash(csproj: Path):
+    """
+    Hash project inputs + directory build files.
+    """
+    project_dir = csproj.parent
+
+    inputs = [csproj]
+    inputs.extend(find_directory_build_files(project_dir))
+    inputs.extend(iter_project_inputs(project_dir))
+
+    # remove duplicates, sort stable
+    inputs = sorted(set(inputs))
+
+    h = hashlib.sha256()
+
+    for p in inputs:
+        rel = str(p.relative_to(ROOT)).replace("\\", "/")
+        h.update(rel.encode("utf-8"))
+        h.update(b"\x00")
+
+        with open(p, "rb") as f:
+            while True:
+                chunk = f.read(1024 * 1024)
+                if not chunk:
+                    break
+                h.update(chunk)
+
+    return h.hexdigest()
+
+
+def cache_file_for(csproj: Path):
+    safe_name = str(csproj.relative_to(ROOT)).replace("/", "__").replace("\\", "__")
+    return CACHE_DIR / (safe_name + ".sha256")
+
+
+def should_build_hash_cache(csproj: Path):
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+    new_hash = compute_project_hash(csproj)
+    cache_file = cache_file_for(csproj)
+
+    if cache_file.exists():
+        old_hash = cache_file.read_text().strip()
+        if old_hash == new_hash:
+            return False
+
+    cache_file.write_text(new_hash + "\n")
+    return True
+
 import shutil
 
 def fix_addon_code_case():
@@ -277,6 +386,8 @@ def main():
     parser.add_argument("--full", action="store_true", help="Force a full build using SboxBuild.")
     parser.add_argument("--no-auto-full", action="store_true",
                         help="Disable auto full-build detection for fresh clones.")
+    parser.add_argument("--hash-cache", action="store_true",
+                        help="Use hash-cache mode (build only if project inputs changed).")
     args = parser.parse_args()
 
     os.chdir(ROOT)
@@ -319,6 +430,10 @@ def main():
             print("   ", p.relative_to(ROOT))
 
         for p in projects:
+            if args.hash_cache:
+                if not should_build_hash_cache(p):
+                    print(f"\n==> SKIPPING (hash match): {p.relative_to(ROOT)}")
+                    continue
             build_project(p)
 
         print("\n==> Done.")
