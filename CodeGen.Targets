@@ -1,0 +1,101 @@
+<Project>
+
+  <!-- =====================================================================
+       Locate the CodeGen executable (platform-aware)
+  ====================================================================== -->
+  <PropertyGroup>
+    <CodeGenToolDir Condition="'$(OS)' == 'Windows_NT'">..\Tools\CodeGen\bin</CodeGenToolDir>
+    <CodeGenToolDir Condition="'$(OS)' != 'Windows_NT'">../Tools/CodeGen/bin</CodeGenToolDir>
+    
+    <CodeGeneratorExe Condition="'$(CodeGeneratorExe)' == '' And '$(OS)' == 'Windows_NT'">$(CodeGenToolDir)\CodeGen.exe</CodeGeneratorExe>
+    <CodeGeneratorExe Condition="'$(CodeGeneratorExe)' == '' And '$(OS)' != 'Windows_NT'">$(CodeGenToolDir)/CodeGen</CodeGeneratorExe>
+  </PropertyGroup>
+
+  <!-- Make sure we can find the tool even after clean -->
+  <ItemGroup>
+    <ProjectReference Include="../Tools/CodeGen/CodeGen.csproj"
+                      OutputItemType="CodeGenTool"
+                      ReferenceOutputAssembly="false"
+                      Private="true" />
+  </ItemGroup>
+
+
+  <!-- =====================================================================
+       Clean generated files on Clean / Rebuild
+  ====================================================================== -->
+  <Target Name="CleanCodeGen"
+          AfterTargets="Clean">
+    <RemoveDir Directories="obj/.generated" />
+    <Delete Files="obj/.generated.stamp" />
+  </Target>
+
+
+  <!-- =====================================================================
+       Main code generation target - now incremental
+  ====================================================================== -->
+  <Target Name="CodeGenFiles"
+          BeforeTargets="CoreCompile"
+          Condition="('$(DesignTimeBuild)' != 'true' And '$(BuildingInsideVisualStudio)' != 'true') Or '$(ForceCodeGen)' == 'true'"
+          Inputs="$(MSBuildProjectFullPath);
+                  $(CodeGeneratorExe);
+                  @(Compile);
+                  @(None);
+                  @(EmbeddedResource);
+                  @(AdditionalFiles);
+                  @(Content);
+                  @(T4TemplateFiles->'%(FullPath)')"
+          Outputs="obj/.generated.stamp">
+
+    <PropertyGroup>
+      <!-- Where generated files live -->
+      <GeneratedOutputDir>obj/.generated</GeneratedOutputDir>
+      <GeneratedStampFile>$(GeneratedOutputDir).stamp</GeneratedStampFile>
+    </PropertyGroup>
+
+    <Message Importance="high"
+             Text="Running code generation (changed inputs detected)..." />
+
+    <!-- Actually run the generator -->
+    <Exec Command="$(CodeGeneratorExe)"
+          WorkingDirectory="$(MSBuildProjectDirectory)"
+          ConsoleToMSBuild="true"
+          StandardOutputImportance="high"
+          IgnoreExitCode="false" />
+
+    <!-- Touch the stamp file so MSBuild knows we ran successfully -->
+    <Touch Files="$(GeneratedStampFile)"
+           AlwaysCreate="true"
+           ForceTouch="true" />
+
+    <!-- Collect all generated .cs files -->
+    <ItemGroup>
+      <GeneratedFiles Include="$(GeneratedOutputDir)/**/*.cs"
+                      Exclude="$(GeneratedOutputDir)/obj/**/*.cs" />
+    </ItemGroup>
+
+    <!-- Prevent duplicate / stale Compile items:
+         1. Remove any Compile items that would match generated filenames
+         2. Then add the freshly generated ones -->
+    <ItemGroup>
+      <Compile Remove="@(GeneratedFiles->'%(RecursiveDir)%(Filename)%(Extension)')" />
+      <Compile Include="@(GeneratedFiles)" />
+    </ItemGroup>
+
+    <Message Importance="normal"
+             Text="Code generation complete. $([System.String]::Format('{0} file(s) generated.', @(GeneratedFiles->Count())))" />
+
+  </Target>
+
+
+  <!-- =====================================================================
+       Optional: If you have .tt files or other explicit templates,
+       declare them here so they're included in Inputs
+  ====================================================================== -->
+  <ItemGroup>
+    <!-- Example - add your real .tt / template files if they exist -->
+    <!-- <T4TemplateFiles Include="**\*.tt" /> -->
+    <!-- <T4TemplateFiles Include="Systems\UI\Styles\BaseStyles.Generated.tt" /> -->
+    <!-- <T4TemplateFiles Include="Platform\VR\VRSystem.Generated.tt" /> -->
+  </ItemGroup>
+
+</Project>

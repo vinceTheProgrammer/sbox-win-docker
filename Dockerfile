@@ -95,6 +95,10 @@ RUN git config --global --add safe.directory /root/sbox
 RUN apt-get update -qq && apt-get install -qq python3 && rm -rf /var/lib/apt/lists/*
 COPY build.py /usr/local/bin/build.py
 
+# Add patched version of CodeGen.Targets
+RUN mkdir -p /root/patches
+COPY CodeGen.Targets /root/patches/CodeGen.Targets
+
 WORKDIR /root/sbox
 
 ENTRYPOINT ["python3", "/usr/local/bin/build.py"]

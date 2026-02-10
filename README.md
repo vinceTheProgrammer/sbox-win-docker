@@ -1,5 +1,5 @@
 # sbox-win-docker
-`sbox-win-docker` provides a single script to run while inside of the `sbox-public` repo, which will build sbox for you. It uses docker under the hood, but you shouldn't need to worry about that.
+`sbox-win-docker` provides a single script to run while inside of the `sbox-public` repo, which will build sbox for you. It uses docker under the hood, but you shouldn't need to worry too much about it.
 
 ## Installation
 ```
@@ -12,8 +12,22 @@ While in any `sbox-public` repo:
 ```
 sbox-build
 ```
+I highly recommend using `--enable-hash-cache` to enable the hash cache for smarter change based building that does not rely on `git commit`ing between every rebuild.
+
+Consider the experimental `--enable-codegen-patch` flag to enable the application of a CodeGen.Targets patch during builds to (allegedly) skip codegen when not necessary to re-run.
 
 Note: if Docker is not installed, started, or set up, `sbox-build` will walk you through it.
+
+## Update
+```
+sudo curl -L https://raw.githubusercontent.com/vinceTheProgrammer/sbox-win-docker/refs/heads/main/sbox-build -o /usr/local/bin/sbox-build
+sudo chmod +x /usr/local/bin/sbox-build
+sbox-build --pull # or sbox-build --rebuild --update
+```
+
+## Known issues
+- `--test` hangs
+- `--format` completely breaks
 
 ## Credit
 - Used the Dockerfile created by tsktp as the foundation: https://github.com/tsktp/sbox-public-linux-docker

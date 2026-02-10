@@ -15,6 +15,11 @@ CACHE_DIR = ROOT / ".sboxbuild_cache"
 HOST_UID = os.environ.get("HOST_UID")
 HOST_GID = os.environ.get("HOST_GID")
 
+CODEGEN_PATCH_FLAG = ROOT / ".sboxbuild_codegen_patch"
+CODEGEN_TARGETS = ROOT / "engine/CodeGen.Targets"
+CODEGEN_PATCH_SRC = Path("/root/patches/CodeGen.Targets")
+CODEGEN_BACKUP = ROOT / "CodeGen.Targets.backup"
+
 # Ignore paths (repo-relative)
 IGNORE_DIRS = {
     ".git",
@@ -103,6 +108,8 @@ def git_changed_files():
 
     return sorted(changed)
 
+def find_all_csprojs():
+    return sorted(ROOT.rglob("*.csproj"))
 
 def find_csproj_owners(changed_files):
     owners = set()
@@ -122,6 +129,17 @@ def find_csproj_owners(changed_files):
 
     return sorted(owners)
 
+def prompt_yes_no(msg: str, default: bool) -> bool:
+    suffix = " [Y/n]" if default else " [y/N]"
+    while True:
+        ans = input(msg + suffix + ": ").strip().lower()
+        if ans == "":
+            return default
+        if ans in ("y", "yes"):
+            return True
+        if ans in ("n", "no"):
+            return False
+        print("Please answer y or n.")
 
 def wine_path(path: Path):
     return "Z:/" + str(path.relative_to("/")).replace("\\", "/")
@@ -137,6 +155,49 @@ def build_project(csproj: Path):
         "build", proj,
         "-c", CONFIG
     ])
+
+def test():
+    if not SBOXBUILD_CSPROJ.exists():
+        print(f"ERROR: missing {SBOXBUILD_CSPROJ}")
+        return 1
+
+    proj = wine_path(SBOXBUILD_CSPROJ)
+
+    print("\n==> TESTS (SboxBuild)\n")
+
+    run([
+        "xvfb-run", "-a",
+        "wine", DOTNET_EXE,
+        "run",
+        "--project", proj,
+        "--",
+        "test"
+    ])
+
+    print("\n==> Testing done.")
+    return 0
+
+def format():
+    if not SBOXBUILD_CSPROJ.exists():
+        print(f"ERROR: missing {SBOXBUILD_CSPROJ}")
+        return 1
+
+    proj = wine_path(SBOXBUILD_CSPROJ)
+
+    print("\n==> FORMAT (SboxBuild)\n")
+
+    run([
+        "xvfb-run", "-a",
+        "wine", DOTNET_EXE,
+        "run",
+        "--project", proj,
+        "--",
+        "format",
+        "--verify"
+    ])
+
+    print("\n==> Format done.")
+    return 0
 
 
 def looks_like_fresh_clone(min_hits=4):
@@ -284,8 +345,6 @@ def cache_file_for(csproj: Path):
 
 
 def should_build_hash_cache(csproj: Path):
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-
     new_hash = compute_project_hash(csproj)
     cache_file = cache_file_for(csproj)
 
@@ -296,6 +355,21 @@ def should_build_hash_cache(csproj: Path):
 
     cache_file.write_text(new_hash + "\n")
     return True
+
+def force_update_hash(csproj: Path):
+    new_hash = compute_project_hash(csproj)
+    cache_file = cache_file_for(csproj)
+
+    cache_file.write_text(new_hash + "\n")
+
+def init_hash_cache():
+    print("==> Initializing hash cache...")
+    projects = find_all_csprojs()
+
+    for p in projects:
+        h = force_update_hash(p)
+
+    print(f"==> Hash cache initialized for {len(projects)} projects.")
 
 import shutil
 
@@ -378,24 +452,120 @@ def fix_ownership_since(start_time: float):
 
     print("==> Ownership fixed.")
 
+def apply_codegen_patch():
+    """
+    If .sboxbuild_codegen_patch exists, replace engine/CodeGen.Targets
+    with /root/patches/CodeGen.Targets, while backing up the original.
+    """
+    if not CODEGEN_PATCH_FLAG.exists():
+        return False
+
+    if not CODEGEN_PATCH_SRC.exists():
+        print(f"ERROR: Codegen patch flag exists, but patch file missing: {CODEGEN_PATCH_SRC}")
+        return False
+
+    if not CODEGEN_TARGETS.exists():
+        print(f"ERROR: Missing CodeGen.Targets in repo: {CODEGEN_TARGETS}")
+        return False
+
+    # ensure cache dir exists for backup
+    CODEGEN_BACKUP.parent.mkdir(parents=True, exist_ok=True)
+
+    # backup original (overwrite any previous backup)
+    CODEGEN_BACKUP.write_bytes(CODEGEN_TARGETS.read_bytes())
+
+    # apply patched version
+    CODEGEN_TARGETS.write_bytes(CODEGEN_PATCH_SRC.read_bytes())
+
+    print("==> Codegen patch enabled: replaced engine/CodeGen.Targets")
+    return True
+
+
+def restore_codegen_patch():
+    """
+    Restore CodeGen.Targets if a backup exists.
+    """
+    if not CODEGEN_BACKUP.exists():
+        return
+
+    CODEGEN_TARGETS.write_bytes(CODEGEN_BACKUP.read_bytes())
+    CODEGEN_BACKUP.unlink(missing_ok=True)
+
+    print("==> Codegen patch restored: reverted engine/CodeGen.Targets")
 
 def main():
     start_time = time.time()
+
+    something_to_build = True
+
+    no_prompt_env = os.environ.get("NO_PROMPT", "") == "1"
 
     parser = argparse.ArgumentParser(description="Smart incremental build for s&box in docker/wine.")
     parser.add_argument("--full", action="store_true", help="Force a full build using SboxBuild.")
     parser.add_argument("--no-auto-full", action="store_true",
                         help="Disable auto full-build detection for fresh clones.")
-    parser.add_argument("--hash-cache", action="store_true",
-                        help="Use hash-cache mode (build only if project inputs changed).")
+    parser.add_argument("--enable-hash-cache", action="store_true",
+                    help="Enable hash-cache mode (creates .sboxbuild_cache/).")
+    parser.add_argument("--enable-codegen-patch", action="store_true",
+                    help="Enable CodeGen.Targets patching (creates .sboxbuild_codegen_patch).")
+    parser.add_argument("--test", action="store_true",
+                        help="Run tests after build.")
+    parser.add_argument("--format", action="store_true",
+                        help="Format the project.")
+    parser.add_argument("--no-prompt", action="store_true",
+                    help="Never prompt user; use defaults.")
     args = parser.parse_args()
+
+    no_prompt = args.no_prompt or no_prompt_env
 
     os.chdir(ROOT)
 
     # avoid "dubious ownership" issues
     subprocess.call(["git", "config", "--global", "--add", "safe.directory", str(ROOT)])
 
+    codegen_patch_applied = False
+
     try:
+
+        # First build wizard
+        if looks_like_fresh_clone() and not no_prompt:
+            print("==> Fresh clone detected.")
+
+            if prompt_yes_no("Enable hash cache mode? (change based smart building that does not rely on git commits) ; Creates .sboxbuild_cache folder", default=True):
+                if not CACHE_DIR.exists():
+                    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+                print("==> Hash cache enabled.")
+
+            if prompt_yes_no("Enable CodeGen.Targets patch? (experimental CodeGen.Targets patch that skips re-running codegen if already generated) ; Creates .sboxbuild_codegen_patch file", default=False):
+                CODEGEN_PATCH_FLAG.write_text("enabled\n")
+                print("==> Codegen patch enabled.")
+
+        # Hash cache set up
+        hash_cache_enabled = (CACHE_DIR.exists() or args.enable_hash_cache)
+
+        if args.enable_hash_cache and not CACHE_DIR.exists():
+            CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            print("==> Hash cache enabled: created .sboxbuild_cache/")
+            init_hash_cache()
+        elif hash_cache_enabled:
+            print("==> Hash cache enabled: using existing .sboxbuild_cache/")
+        else:
+            print("==> Hash cache disabled")
+
+        # Enable codegen patch (creates marker file)
+        if args.enable_codegen_patch:
+            CODEGEN_PATCH_FLAG.write_text("enabled\n")
+            print("==> Enabled codegen patch: created .sboxbuild_codegen_patch")
+
+        # Apply patch if marker exists
+        codegen_patch_applied = apply_codegen_patch()
+
+        # Format
+        if args.format:
+            rc = format()
+            if rc == 1:
+                return rc
+
         # Forced full build
         if args.full:
             rc = full_build()
@@ -407,39 +577,48 @@ def main():
             rc = full_build()
             return rc
 
-        # Normal incremental behavior
-        changed = git_changed_files()
-
-        if not changed:
-            print("==> No relevant git changes detected. Nothing to build.")
-            return 0
-
-        print("==> Changed relevant files:")
-        for f in changed:
-            print("   ", f)
-
-        projects = find_csproj_owners(changed)
+        if hash_cache_enabled:
+            projects = find_all_csprojs()
+        else:
+            changed = git_changed_files()
+            if not changed:
+                print("==> No relevant git changes detected. Nothing to build.")
+                projects = []
+                something_to_build = False
+            else:
+                projects = find_csproj_owners(changed)
 
         if not projects:
-            print("\n==> No owning .csproj found for changed files.")
-            print("    (Maybe only non-code files changed?)")
-            return 0
+            if hash_cache_enabled:
+                print("==> No .csproj files found.")
+            else:
+                print("\n==> No owning .csproj found for changed files.")
+                print("    (Maybe only non-code files changed?)")
+            something_to_build = False
 
-        print("\n==> Projects to build:")
-        for p in projects:
-            print("   ", p.relative_to(ROOT))
+        if something_to_build:
+            print("\n==> Projects to build:")
+            for p in projects:
+                print("   ", p.relative_to(ROOT))
 
-        for p in projects:
-            if args.hash_cache:
-                if not should_build_hash_cache(p):
-                    print(f"\n==> SKIPPING (hash match): {p.relative_to(ROOT)}")
-                    continue
-            build_project(p)
+            for p in projects:
+                if hash_cache_enabled:
+                    if not should_build_hash_cache(p):
+                        print(f"\n==> SKIPPING (hash match): {p.relative_to(ROOT)}")
+                        continue
+                build_project(p)
+
+        if args.test:
+            rc = test()
+            if rc == 1:
+                return rc
 
         print("\n==> Done.")
         return 0
 
     finally:
+        if codegen_patch_applied:
+            restore_codegen_patch()
         fix_addon_code_case()
         fix_ownership_since(start_time)
 

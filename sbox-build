@@ -20,8 +20,8 @@ usage() {
 Usage: sbox-build [options]
 
 Wrapper Options:
-  --pull           Force pulling the prebuilt image (even if local image exists)
-  --rebuild        Force rebuilding the image locally (uses local repo clone)
+  --pull           Force pull the prebuilt image (even if local image exists)
+  --rebuild        Force rebuild the image locally (uses local repo clone)
   --update         When rebuilding, git pull before building
   --src-dir <dir>  Override local repo directory (default: $DEFAULT_SRC_DIR)
   --no-prompt      Never prompt; fail if user interaction would be required
@@ -29,20 +29,19 @@ Wrapper Options:
   -h, --help       Show this help message
 
 Build Options:
-  --full           Force full build
-  --no-auto-full   Disable auto full-build detection for fresh clones.
-  --test           Run tests after build
-  --format         Format the project
-  --patch-codegen  Make future builds faster by patching codegen
+  --enable-codegen-patch  Make future builds faster. Patches CodeGen.Targets before builds. Creates .sboxbuild_codegen_patch (experimental)
+  --enable-hash-cache     Make change based building not rely on git commits. Creates .sboxbuild_cache (recommended)
+  --full                  Force full build
+  --no-auto-full          Disable auto full-build detection for fresh clones
+  --test                  Run tests after build
+  --format                Format the project
 
 Examples:
   sbox-build
   sbox-build --pull
   sbox-build --rebuild
-  sbox-build --rebuild --update
-  sbox-build --rebuild --src-dir ~/dev/sbox-win-docker
-  sbox-build --pull --no-prompt
-  sbox-build --full --test --format --patch-codegen
+  sbox-build --enable-codegen-patch --enable-hash-cache
+  sbox-build --full --test --format
 EOF
 }
 
@@ -352,9 +351,21 @@ fi
 
 echo "Starting s&box build in repo: $REPO_ROOT"
 
-docker run --rm -it \
-  -v "$PWD:/root/sbox" \
-  -v "$HOME/.cache/sbox-nuget":/root/.wine64/drive_c/users/root/.nuget \
-  -e HOST_UID="$(id -u)" \
-  -e HOST_GID="$(id -g)" \
-  "$LOCAL_IMAGE" "${DOCKER_ARGS[@]}"
+if [[ "$DROP_SHELL" -eq 1 ]]; then
+  echo "Launching interactive bash shell inside container..."
+  docker run --rm -it \
+    -v "$PWD:/root/sbox" \
+    -v "$HOME/.cache/sbox-nuget":/root/.wine64/drive_c/users/root/.nuget \
+    -e HOST_UID="$(id -u)" \
+    -e HOST_GID="$(id -g)" \
+    --entrypoint bash \
+    "$LOCAL_IMAGE"
+else
+  docker run --rm -it \
+    -v "$PWD:/root/sbox" \
+    -v "$HOME/.cache/sbox-nuget":/root/.wine64/drive_c/users/root/.nuget \
+    -e HOST_UID="$(id -u)" \
+    -e HOST_GID="$(id -g)" \
+    -e NO_PROMPT="$NO_PROMPT" \
+    "$LOCAL_IMAGE" "${DOCKER_ARGS[@]}"
+fi
