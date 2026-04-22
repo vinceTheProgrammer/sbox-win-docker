@@ -14,19 +14,21 @@ FORCE_REBUILD=0
 DO_UPDATE=0
 SRC_DIR="$DEFAULT_SRC_DIR"
 DROP_SHELL=0
+REPO_ROOT_NAME_OVERRIDE=""
 
 usage() {
   cat <<EOF
 Usage: sbox-build [options]
 
 Wrapper Options:
-  --pull           Force pull the prebuilt image (even if local image exists)
-  --rebuild        Force rebuild the image locally (uses local repo clone)
-  --update         When rebuilding, git pull before building
-  --src-dir <dir>  Override local repo directory (default: $DEFAULT_SRC_DIR)
-  --no-prompt      Never prompt; fail if user interaction would be required
-  --shell          Drop into an interactive bash shell inside the container           
-  -h, --help       Show this help message
+  --pull                Force pull the prebuilt image (even if local image exists)
+  --rebuild             Force rebuild the image locally (uses local repo clone)
+  --update              When rebuilding, git pull before building
+  --src-dir <dir>       Override local repo directory (default: $DEFAULT_SRC_DIR)
+  --repo-root-name <n>  Override detected repo root name (bypasses 'sbox-public' check)
+  --no-prompt           Never prompt; fail if user interaction would be required
+  --shell               Drop into an interactive bash shell inside the container           
+  -h, --help            Show this help message
 
 Build Options:
   --enable-codegen-patch  Make future builds faster. Patches CodeGen.Targets before builds. Creates .sboxbuild_codegen_patch (experimental)
@@ -72,6 +74,19 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       SRC_DIR="${1/#\~/$HOME}"
+      shift
+      ;;
+    --repo-root-name=*)
+      REPO_ROOT_NAME_OVERRIDE="${1#--repo-root-name=}"
+      shift
+      ;;
+    --repo-root-name)
+      shift
+      if [[ $# -eq 0 ]]; then
+        echo "ERROR: --repo-root-name requires a value"
+        exit 1
+      fi
+      REPO_ROOT_NAME_OVERRIDE="$1"
       shift
       ;;
     --no-prompt)
@@ -326,7 +341,7 @@ elif [[ "$IMAGE_EXISTS" -eq 0 ]]; then
 fi
 
 # ----------------------------------------
-# Strict check: must be inside sbox-public
+# Strict check: must be inside sbox-public (or override)
 # ----------------------------------------
 
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
@@ -337,9 +352,17 @@ if [[ -z "$REPO_ROOT" ]]; then
   exit 1
 fi
 
-if [[ "$(basename "$REPO_ROOT")" != "sbox-public" ]]; then
+# Use override name if provided, otherwise use actual basename
+if [[ -n "$REPO_ROOT_NAME_OVERRIDE" ]]; then
+  REPO_ROOT_NAME="$REPO_ROOT_NAME_OVERRIDE"
+else
+  REPO_ROOT_NAME="$(basename "$REPO_ROOT")"
+fi
+
+# Only validate against 'sbox-public' if no override was provided
+if [[ -z "$REPO_ROOT_NAME_OVERRIDE" && "$REPO_ROOT_NAME" != "sbox-public" ]]; then
   echo "ERROR: Refusing to run: git repo top-level folder is not named 'sbox-public'."
-  echo "Found repo root: $REPO_ROOT"
+  echo "Found repo root: $REPO_ROOT (detected name: $REPO_ROOT_NAME)"
   echo "Current dir: $(pwd)"
   exit 1
 fi
@@ -349,7 +372,7 @@ if [[ "$PWD" != "$REPO_ROOT"* ]]; then
   exit 1
 fi
 
-echo "Starting s&box build in repo: $REPO_ROOT"
+echo "Starting s&box build in repo: $REPO_ROOT (name override: ${REPO_ROOT_NAME_OVERRIDE:-none})"
 
 if [[ "$DROP_SHELL" -eq 1 ]]; then
   echo "Launching interactive bash shell inside container..."
@@ -369,3 +392,4 @@ else
     -e NO_PROMPT="$NO_PROMPT" \
     "$LOCAL_IMAGE" "${DOCKER_ARGS[@]}"
 fi
+
