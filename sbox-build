@@ -357,13 +357,24 @@ if [[ -z "$REPO_ROOT" ]]; then
 fi
 
 # Use override name if provided, otherwise use actual basename
+ACTUAL_REPO_ROOT_NAME="$(basename "$REPO_ROOT")"
+
 if [[ -n "$REPO_ROOT_NAME_OVERRIDE" ]]; then
+  # When override is provided, it MUST match the actual directory name
+  if [[ "$REPO_ROOT_NAME_OVERRIDE" != "$ACTUAL_REPO_ROOT_NAME" ]]; then
+    echo "ERROR: --repo-root-name override does not match actual repository directory name."
+    echo "  Override provided: $REPO_ROOT_NAME_OVERRIDE"
+    echo "  Actual directory:  $ACTUAL_REPO_ROOT_NAME"
+    echo "Found repo root: $REPO_ROOT"
+    echo "Current dir: $(pwd)"
+    exit 1
+  fi
   REPO_ROOT_NAME="$REPO_ROOT_NAME_OVERRIDE"
 else
-  REPO_ROOT_NAME="$(basename "$REPO_ROOT")"
+  REPO_ROOT_NAME="$ACTUAL_REPO_ROOT_NAME"
 fi
 
-# Only validate against 'sbox-public' if no override was provided
+# Validate against 'sbox-public' (override bypasses this check)
 if [[ -z "$REPO_ROOT_NAME_OVERRIDE" && "$REPO_ROOT_NAME" != "sbox-public" ]]; then
   echo "ERROR: Refusing to run: git repo top-level folder is not named 'sbox-public'."
   echo "Found repo root: $REPO_ROOT (detected name: $REPO_ROOT_NAME)"
