@@ -1,9 +1,9 @@
-# sbox-win-docker
-`sbox-win-docker` provides a single script to run while inside of the `sbox-public` repo, which will build sbox for you. It uses docker under the hood, but you shouldn't need to worry too much about it.
+# sbox-wine-docker
+`sbox-wine-docker` provides a single script to run while inside of the `sbox-public` repo, which will build sbox for you. It uses docker under the hood, but you shouldn't need to worry too much about it.
 
 ## Installation
 ```
-sudo curl -L https://raw.githubusercontent.com/vinceTheProgrammer/sbox-win-docker/refs/heads/main/sbox-build -o /usr/local/bin/sbox-build
+sudo curl -L https://raw.githubusercontent.com/vinceTheProgrammer/sbox-wine-docker/refs/heads/main/sbox-build -o /usr/local/bin/sbox-build
 sudo chmod +x /usr/local/bin/sbox-build
 ```
 
