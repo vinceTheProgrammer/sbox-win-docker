@@ -389,22 +389,20 @@ fi
 
 echo "Starting s&box build in repo: $REPO_ROOT (name override: ${REPO_ROOT_NAME_OVERRIDE:-none})"
 
+COMPOSE_FILE="/home/cseliot/Applications/SBox/1-sbox-win-docker/docker-compose.yml"
+
 if [[ "$DROP_SHELL" -eq 1 ]]; then
   echo "Launching interactive bash shell inside container..."
-  docker run --rm -it \
+  docker compose -f "$COMPOSE_FILE" run --rm \
     -v "$PWD:/root/sbox:z" \
-    -v "$HOME/.cache/sbox-nuget":/root/.wine64/drive_c/users/root/.nuget:z \
     -e HOST_UID="$(id -u)" \
     -e HOST_GID="$(id -g)" \
-    --entrypoint bash \
-    "$LOCAL_IMAGE"
+    sbox-build bash
 else
-  docker run --rm -it \
+  docker compose -f "$COMPOSE_FILE" run --rm \
     -v "$PWD:/root/sbox:z" \
-    -v "$HOME/.cache/sbox-nuget":/root/.wine64/drive_c/users/root/.nuget:z \
     -e HOST_UID="$(id -u)" \
     -e HOST_GID="$(id -g)" \
     -e NO_PROMPT="$NO_PROMPT" \
-    "$LOCAL_IMAGE" "${DOCKER_ARGS[@]}"
+    sbox-build "${DOCKER_ARGS[@]}"
 fi
-

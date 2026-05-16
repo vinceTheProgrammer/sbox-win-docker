@@ -1,0 +1,29 @@
+# s&box Wine build system
+services:
+  sbox-build:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sbox-win-docker:latest
+    container_name: sbox-build
+    environment:
+      - DISPLAY=:0
+      - WINEDEBUG=-all
+      - SBOX_CONFIG=${SBOX_CONFIG:-Developer}
+      - HOST_UID=${HOST_UID:-1000}
+      - HOST_GID=${HOST_GID:-1000}
+      - NO_PROMPT=${NO_PROMPT:-0}
+    volumes:
+      # Persist Wine prefix across runs (named volume)
+      - wine-prefix:/root/.wine64
+      # NuGet cache — speeds up dotnet restore significantly
+      - ${NUGET_CACHE:-/home/cseliot/.cache/sbox-nuget}:/root/.wine64/drive_c/users/root/.nuget:z
+    devices:
+      - /dev/dri:/dev/dri
+    working_dir: /root/sbox
+    entrypoint: ["python3", "/usr/local/bin/build.py"]
+    security_opt:
+      - seccomp=unconfined
+
+volumes:
+  wine-prefix:
